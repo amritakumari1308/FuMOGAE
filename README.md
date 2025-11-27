@@ -1,5 +1,5 @@
-# CHOQSUGFUZGAE
-CHOQSUGFUZGAE project description
+# FuMOGAE
+FuMOGAE project description
 The Dataset folder contains three configurations derived from two major breast cancer
 cohorts—TCGA-BRCA and METABRIC. The TCGA-BRCA dataset consists of 951 patient
 samples and provides seven complementary modalities: Clinical data, Copy Number
