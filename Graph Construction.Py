@@ -502,26 +502,26 @@ model.eval()
 with torch.no_grad():
     hs_tr, qs_tr, xrs_tr, zs_tr, ars_tr = model(xs_train, S_train)
 # ============================================================
-# 🔥 TRAIN EMBEDDING (CORRECTED)
+#  TRAIN EMBEDDING (CORRECTED)
 # ============================================================
 
 z_concat_train = torch.cat(zs_tr, dim=1)
 z_concat_train_np = z_concat_train.cpu().numpy()
 
-# 🔥 STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
+#  STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
 z_concat_train_np = z_concat_train_np + np.random.normal(0, 0.01, z_concat_train_np.shape)
 
-# 🔥 STEP 2: STANDARDIZATION (VERY IMPORTANT)
+#  STEP 2: STANDARDIZATION (VERY IMPORTANT)
 z_concat_train_np = (z_concat_train_np - z_concat_train_np.mean(axis=0)) / (z_concat_train_np.std(axis=0) + 1e-8)
 
-# 🔥 STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
+# STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
 z_concat_train_np = z_concat_train_np / (np.linalg.norm(z_concat_train_np, axis=1, keepdims=True) + 1e-8)
 
 print("Train concat shape:", z_concat_train_np.shape)
 
 
 # ============================================================
-# 🔥 TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
+#  TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
 # ============================================================
 
 z_concat_test = torch.cat(zs_te, dim=1)
