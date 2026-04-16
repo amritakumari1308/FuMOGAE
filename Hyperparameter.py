@@ -1,59 +1,47 @@
 ## Hyperparameter Configuration
 All hyperparameter settings used in theFuMOGAE experiments are stored in:
-GAE:
-  encoder_layers: [256, 128]
-  activation: "ReLU"
-  dropout: 0.40
-  learning_rate: 0.010
-  epochs: 10
+Graph construction:
+distance metric = Euclidean
+kernel = Gaussian
+sigma = mean pairwise distance
+kNN = 10
+symmetrization = max(W, Wᵀ)
+self-loops = removed (added during normalization)
+sparsification = top 10% edges (90th percentile)
 
-GraphConstruction:
-  similarity_metric: "Pearson"
-  kNN:
-    clinical: 10
-    others: 5
-  thresholds:
-    CLN: 0.30
-    CNA: 0.60
-    GSE: 0.30
-    DNA: 0.30
-    miRNA: 0.35
-    MUT: 0.25
-    COEXP: 0.40
-
-Classifier_FFNN:
-  hidden_sizes: [256, 128, 64]
-  dropout: 0.40
-  optimizer: "AdamW"
-  learning_rate: 0.001
-  epochs: 200
-  batch_size: 128
-
-OtherClassifiers:
-  RF:
-    trees: 400
-    class_weight: "balanced_subsample"
-  XGBoost:
-    trees: 600
-    depth: 6
-    eta: 0.03
-    subsample: 0.9
-    colsample: 0.8
-  SVM:
-    kernel: "RBF"
-    C: 2.0
-    gamma: "scale"
-    class_weight: "balanced"
-  MLP:
-    max_iter: 200
-    lr_schedule: "adaptive"
+Multi-view graph autoencoder:
+encoder = input → 512 → 128
+latent dimension = 128
+projection head = 128 → 64
+activation = ReLU
+graph normalization = D⁻¹/² A D⁻¹/²
 
 Training:
-  cross_validation:
-    outer: 10
-    inner: 5
-  imbalance: "SMOTE"
+optimizer = Adam
+learning rate = 0.0005
+weight decay = 1e-4
+epochs = 80
+early stopping patience = 10
+gradient clipping = 5
+contrastive temperature = 0.5
 
-FuzzyFusion:
-  alpha_values: [0.3, 0.5, 0.7, 0.9]
-  formula: "alpha*Choquet + (1-alpha)*Sugeno"
+Classifier :
+
+Random Forest:
+n_estimators = 300
+max_depth = 12
+min_samples_split = 5
+min_samples_leaf = 2
+
+FFNN:
+architecture = 128 → 64 → 5
+dropout = 0.3, 0.2
+learning rate = 0.001
+epochs = 100
+
+MLP:
+architecture = 64 → 5
+
+Fusion:
+methods = Choquet, Sugeno
+final output = 0.5 × Choquet + 0.5 × Sugen
