@@ -47,21 +47,21 @@ def visualize_graph(W, title="Graph Visualization", num_nodes=200):
     num_nodes: visualize subset (important for large graphs)
     """
 
-    # 🔥 Step 1: reduce size (for clarity)
+    #  Step 1: reduce size (for clarity)
     W_small = W[:num_nodes, :num_nodes]
 
-    # 🔥 Step 2: create graph
+    #  Step 2: create graph
     G = nx.from_numpy_array(W_small)
 
-    # 🔥 Step 3: remove very weak edges (optional but important)
+    #  Step 3: remove very weak edges (optional but important)
     threshold = np.percentile(W_small, 90)  # keep strong edges
     edges_to_remove = [(u, v) for u, v, d in G.edges(data=True) if d['weight'] < threshold]
     G.remove_edges_from(edges_to_remove)
 
-    # 🔥 Step 4: layout
+    #  Step 4: layout
     pos = nx.spring_layout(G, seed=42)
 
-    # 🔥 Step 5: plot
+    #  Step 5: plot
     plt.figure(figsize=(10, 8))
     nx.draw(
         G, pos,
@@ -81,13 +81,13 @@ visualize_graph(W_dict["mirna"], "miRNA Graph")
 visualize_graph(W_dict["mutation"], "Mutation Graph")
 visualize_graph(W_dict["coexp"], "Coexpression Graph")
 # ============================================================
-# 🔥 TRAIN-TEST SPLIT (CORRECT POSITION)
+#  TRAIN-TEST SPLIT (CORRECT POSITION)
 # ============================================================
 
 import numpy as np
 from sklearn.model_selection import StratifiedShuffleSplit
 
-y = labels  # 🔥 use your label variable
+y = labels  #  use your label variable
 
 sss = StratifiedShuffleSplit(
     n_splits=1,
@@ -117,7 +117,7 @@ for name, W in W_dict.items():
     W_train[name] = W[np.ix_(train_mask, train_mask)]
     W_test[name]  = W[np.ix_(test_mask, test_mask)]
 # ============================================================
-# 🔥 STEP 2: SPARSIFY GRAPH (VERY IMPORTANT)
+#  STEP 2: SPARSIFY GRAPH (VERY IMPORTANT)
 # ============================================================
 
 for k in W_train:
@@ -133,13 +133,13 @@ import torch
 edge_index_train = {}
 edge_index_test = {}
 
-# 🔥 TRAIN GRAPH
+# TRAIN GRAPH
 for key in W_train:
     A = torch.tensor(W_train[key], dtype=torch.float32)
     edge_index, _ = dense_to_sparse(A)
     edge_index_train[key] = edge_index
 
-# 🔥 TEST GRAPH
+#  TEST GRAPH
 for key in W_test:
     A = torch.tensor(W_test[key], dtype=torch.float32)
     edge_index, _ = dense_to_sparse(A)
@@ -213,10 +213,10 @@ class Encoder(nn.Module):
     def forward(self, x, s):
         # Graph propagation
         x = torch.matmul(s, x)
-        x = F.relu(self.enc1(x))   # 🔥 changed from tanh → ReLU
+        x = F.relu(self.enc1(x))   #  changed from tanh → ReLU
 
         x = torch.matmul(s, x)
-        z = F.relu(self.enc2(x))   # 🔥 changed from tanh → ReLU
+        z = F.relu(self.enc2(x))   #  changed from tanh → ReLU
 
         # Graph reconstruction
         a = torch.sigmoid(z @ self.weight @ z.T)
@@ -235,10 +235,10 @@ class Decoder(nn.Module):
 
     def forward(self, z, s):
         x = torch.matmul(s, z)
-        x = F.relu(self.dec1(x))   # 🔥 changed to ReLU
+        x = F.relu(self.dec1(x))   #  changed to ReLU
 
         x = torch.matmul(s, x)
-        x_recon = self.dec2(x)     # 🔥 NO activation (important)
+        x_recon = self.dec2(x)     #  NO activation (important)
 
         return x_recon
 
@@ -264,7 +264,7 @@ class Network(nn.Module):
         # Feature head (for contrastive learning)
         self.feature_head = nn.Linear(feature_dim, high_feature_dim)
 
-        # 🔥 FIXED CLASSIFIER (NO SOFTMAX)
+        #  FIXED CLASSIFIER (NO SOFTMAX)
         self.classifier = nn.Linear(feature_dim, class_num)
 
         self.view = view
@@ -295,7 +295,7 @@ class Network(nn.Module):
         return hs, qs, xrs, zs, ars
 import torch
 
-# 🔥 ADD THIS
+#  ADD THIS
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 names = list(X_train_dict.keys())
@@ -354,7 +354,7 @@ def contrastive_loss(hs, temperature=0.5):
             mask = torch.eye(2*N, dtype=torch.bool).to(z_i.device)
             similarity_matrix = similarity_matrix.masked_fill(mask, -1e9)
 
-            # 🔥 CORRECT POSITIVE PAIRS
+            #  CORRECT POSITIVE PAIRS
             labels = torch.cat([
                 torch.arange(N, 2*N),
                 torch.arange(0, N)
@@ -423,7 +423,7 @@ optimizer = optim.Adam(model.parameters(), lr=5e-4, weight_decay=1e-4)
 names = list(X_train_dict.keys())
 
 # ============================================================
-# 🔥 EARLY STOPPING SETUP
+#  EARLY STOPPING SETUP
 # ============================================================
 best_loss = float("inf")
 patience = 10
@@ -500,26 +500,26 @@ model.eval()
 with torch.no_grad():
     hs_tr, qs_tr, xrs_tr, zs_tr, ars_tr = model(xs_train, S_train)
 # ============================================================
-# 🔥 TRAIN EMBEDDING (CORRECTED)
+#  TRAIN EMBEDDING (CORRECTED)
 # ============================================================
 
 z_concat_train = torch.cat(zs_tr, dim=1)
 z_concat_train_np = z_concat_train.cpu().numpy()
 
-# 🔥 STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
+#  STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
 z_concat_train_np = z_concat_train_np + np.random.normal(0, 0.01, z_concat_train_np.shape)
 
-# 🔥 STEP 2: STANDARDIZATION (VERY IMPORTANT)
+#  STEP 2: STANDARDIZATION (VERY IMPORTANT)
 z_concat_train_np = (z_concat_train_np - z_concat_train_np.mean(axis=0)) / (z_concat_train_np.std(axis=0) + 1e-8)
 
-# 🔥 STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
+#  STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
 z_concat_train_np = z_concat_train_np / (np.linalg.norm(z_concat_train_np, axis=1, keepdims=True) + 1e-8)
 
 print("Train concat shape:", z_concat_train_np.shape)
 
 
 # ============================================================
-# 🔥 TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
+#  TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
 # ============================================================
 
 z_concat_test = torch.cat(zs_te, dim=1)
