@@ -3,465 +3,534 @@
 ## Co-expression) after hybrid Boruta + mRMR feature selection. Latent embeddings extracted from these
 ## six GAEs are concatenated with the Clinical (CLN) features to form a unified representation.
 ## The final breast cancer subtype classification is performed using a hybrid Choquet–Sugeno fuzzy integral.
-
-
----------Graph Construction---------
+from sklearn.metrics.pairwise import euclidean_distances
+from sklearn.neighbors import kneighbors_graph
 import numpy as np
-import torch
-import matplotlib.pyplot as plt
+
+def build_knn_gaussian_graph(X, k=10):
+    X = np.asarray(X, dtype=np.float32)
+
+    # Step 1: distance
+    dist = euclidean_distances(X)
+    dist = dist / (dist.max() + 1e-8)
+
+    # Step 2: Gaussian similarity
+    sigma = np.mean(dist)
+    W = np.exp(-dist**2 / (2 * sigma**2))
+
+    # Step 3: KNN mask
+    knn = kneighbors_graph(X, k, mode='connectivity', include_self=False)
+    knn = knn.toarray()
+
+    # Step 4: apply mask
+    W = W * knn
+
+    # 🔥 FIX (VERY IMPORTANT)
+    W = np.maximum(W, W.T)   # make symmetric
+
+    # remove self-loops
+    np.fill_diagonal(W, 0)
+from sklearn.metrics.pairwise import euclidean_distances
+import numpy as np
+W_dict = {}
+
+for name, X in modalities.items():
+    print(f"Building similarity knn gaussian for {name}")
+    W_dict[name] = build_knn_gaussian_graph(X)
+import numpy as np
 import networkx as nx
-from scipy.sparse import csr_matrix
-from torch_geometric.data import Data
-from torch_geometric.utils import from_scipy_sparse_matrix, to_undirected
+import matplotlib.pyplot as plt
 
-def construct_knn_graph_pearson(
-    data: np.ndarray,
-    dataset_name: str,
-    n_neighbors: int = 10,
-    threshold: float | None = None,
-    use_abs_for_knn: bool = True,   # choose neighbors by |r| but keep signed weights
-    plot: bool = True,              # << turn on NetworkX visualization
-    max_nodes_for_plot: int = 600,  # subsample for clearer plots
-    layout_k: float | None = None,  # spring_layout k param (None lets networkx choose)
-    edge_color_mode: str = "signed" # "signed" (coolwarm) or "abs" (Blues)
-) -> Data:
+def visualize_graph(W, title="Graph Visualization", num_nodes=200):
     """
-    Build a weighted, symmetric kNN patient–patient graph using Pearson correlation
-    and (optionally) visualize it with NetworkX, coloring edges by weight.
-
-    Returns
-    -------
-    torch_geometric.data.Data with x, edge_index, edge_weight
+    W: adjacency matrix
+    num_nodes: visualize subset (important for large graphs)
     """
-    X = np.asarray(data, dtype=np.float32)
-    N = X.shape[0]
-    if N < 2:
-        raise ValueError("Need at least 2 samples to build a graph.")
-    k = int(min(max(1, n_neighbors), max(1, N - 1)))
 
-    # --- Pearson sample–sample correlation (rows are samples) ---
-    S = np.corrcoef(X)             # (N, N)
-    np.fill_diagonal(S, 0.0)       # no self-edges
-    S = np.nan_to_num(S, nan=0.0, posinf=0.0, neginf=0.0)
-    S = np.clip(S, -1.0, 1.0)
+    # 🔥 Step 1: reduce size (for clarity)
+    W_small = W[:num_nodes, :num_nodes]
 
-    # --- kNN selection per node ---
-    selector = np.abs(S) if use_abs_for_knn else S.copy()
-    rows, cols, vals = [], [], []
-    for i in range(N):
-        idx = np.argpartition(selector[i], -k)[-k:]     # fast top-k (unordered)
-        idx = idx[np.argsort(selector[i, idx])[::-1]]   # high -> low
-        for j in idx:
-            w = S[i, j]  # keep signed weight
-            if threshold is not None:
-                keep_score = abs(w) if use_abs_for_knn else w
-                if keep_score < threshold:
-                    continue
-            rows.append(i); cols.append(j); vals.append(float(w))
+    # 🔥 Step 2: create graph
+    G = nx.from_numpy_array(W_small)
 
-    # --- Symmetrize: A = max(A, A^T) ---
-    A = csr_matrix((vals, (rows, cols)), shape=(N, N))
-    A = A.maximum(A.transpose())
-    A.eliminate_zeros()
+    # 🔥 Step 3: remove very weak edges (optional but important)
+    threshold = np.percentile(W_small, 90)  # keep strong edges
+    edges_to_remove = [(u, v) for u, v, d in G.edges(data=True) if d['weight'] < threshold]
+    G.remove_edges_from(edges_to_remove)
 
-    # --- Convert to PyG ---
-    edge_index, edge_weight = from_scipy_sparse_matrix(A)
-    data_pyg = Data(
-        x=torch.from_numpy(X),
-        edge_index=edge_index,
-        edge_weight=edge_weight
+    # 🔥 Step 4: layout
+    pos = nx.spring_layout(G, seed=42)
+
+    # 🔥 Step 5: plot
+    plt.figure(figsize=(10, 8))
+    nx.draw(
+        G, pos,
+        node_size=30,
+        edge_color="gray",
+        alpha=0.7,
+        with_labels=False
     )
-    print(f"🔹 {dataset_name}: nodes={N}, undirected edges={edge_index.shape[1]//2} (stored directed={edge_index.shape[1]})")
 
-    # --- Visualization (NetworkX, concept from your snippet) ---
-    if plot:
-        # Make sure we draw an undirected simple graph
-        ei = to_undirected(edge_index).cpu().numpy()
-        ew = edge_weight.detach().cpu().numpy().astype(float)
+    plt.title(title)
+    plt.show()
+visualize_graph(W_dict["clinical"], "Clinical Graph")
+visualize_graph(W_dict["cna"], "CNA Graph")
+visualize_graph(W_dict["gse"], "GSE Graph")
+visualize_graph(W_dict["dna"], "DNA Graph")
+visualize_graph(W_dict["mirna"], "miRNA Graph")
+visualize_graph(W_dict["mutation"], "Mutation Graph")
+visualize_graph(W_dict["coexp"], "Coexpression Graph")
+# ============================================================
+# 🔥 TRAIN-TEST SPLIT (CORRECT POSITION)
+# ============================================================
 
-        # Build NX graph with a single undirected edge per pair; keep max |w|
-        G = nx.Graph()
-        G.add_nodes_from(range(N))
-        weight_map = {}
-        for (u, v), w in zip(ei.T, ew):
-            a, b = (int(u), int(v)) if u <= v else (int(v), int(u))
-            if a == b:
-                continue
-            if (a, b) in weight_map:
-                if abs(w) > abs(weight_map[(a, b)]):
-                    weight_map[(a, b)] = float(w)
-            else:
-                weight_map[(a, b)] = float(w)
-        for (u, v), w in weight_map.items():
-            G.add_edge(u, v, weight=w)
-
-        # Subsample for readability if very large
-        if G.number_of_nodes() > max_nodes_for_plot:
-            degs = dict(G.degree())
-            # keep 70% high-degree, 30% random among the rest
-            keep_high = sorted(degs, key=degs.get, reverse=True)[: int(0.7*max_nodes_for_plot)]
-            rest = [n for n in G if n not in keep_high]
-            rng = np.random.default_rng(42)
-            fill = []
-            if len(keep_high) < max_nodes_for_plot and len(rest) > 0:
-                fill = rng.choice(rest, size=max_nodes_for_plot-len(keep_high), replace=False).tolist()
-            keep = set(keep_high) | set(fill)
-            G = G.subgraph(keep).copy()
-
-        # Layout
-        pos = nx.spring_layout(G, seed=42, k=layout_k)
-
-        # Edge colors
-        edges = list(G.edges())
-        if len(edges) == 0:
-            print(f"[{dataset_name}] No edges to visualize after thresholding.")
-        else:
-            wts = np.array([G[u][v]["weight"] for u, v in edges], dtype=float)
-
-            if edge_color_mode.lower() == "abs":
-                colors = np.abs(wts)
-                cmap = plt.cm.Blues
-                vmin, vmax = 0.0, 1.0
-            else:  # "signed"
-                colors = wts
-                cmap = plt.cm.coolwarm
-                vmin, vmax = -1.0, 1.0
-
-            plt.figure(figsize=(8, 8), dpi=160)
-            nx.draw_networkx_nodes(G, pos, node_size=30, node_color="#444444", linewidths=0)
-            ec = nx.draw_networkx_edges(
-                G, pos,
-                edge_color=colors,
-                edge_cmap=cmap,
-                edge_vmin=vmin,
-                edge_vmax=vmax,
-                width=1.0,
-                alpha=0.6
-            )
-            plt.colorbar(ec, shrink=0.7, label="Pearson r" if edge_color_mode=="signed" else "|Pearson r|")
-            plt.title(f"{dataset_name} Graph (Pearson-weighted, spring layout)")
-            plt.axis("off")
-            plt.tight_layout()
-            plt.show()
-
-    return data_pyg
-
-
-# =========================
-# Build graphs (Pearson) + visualize
-# =========================
-# thresholds
-clinical_threshold  = 0.30
-cna_threshold       = 0.60
-gse_threshold       = 0.30
-dna_threshold       = 0.30
-mirna_threshold     = 0.35
-mutation_threshold  = 0.25
-coexp_threshold     = 0.40
-
-# neighbors
-n_neighbors_clinical = 10
-n_neighbors_cna      = 5
-n_neighbors_gse      = 5
-n_neighbors_dna      = 5
-n_neighbors_mirna    = 5
-n_neighbors_mutation = 5
-n_neighbors_coexp    = 5
-
-# Build from your selected arrays (ensure these exist in scope)
-graph_clinical  = construct_knn_graph_pearson(selected_clinical_np,  "Clinical",      n_neighbors_clinical, clinical_threshold,  plot=True, edge_color_mode="signed")
-graph_cna       = construct_knn_graph_pearson(selected_cna_np,       "CNA",           n_neighbors_cna,      cna_threshold,       plot=True, edge_color_mode="signed")
-graph_gse       = construct_knn_graph_pearson(selected_gse_np,       "GSE",           n_neighbors_gse,      gse_threshold,       plot=True, edge_color_mode="signed")
-graph_dna       = construct_knn_graph_pearson(selected_dna_np,       "DNA",           n_neighbors_dna,      dna_threshold,       plot=True, edge_color_mode="signed")
-graph_mirna     = construct_knn_graph_pearson(selected_mirna_np,     "miRNA",         n_neighbors_mirna,    mirna_threshold,     plot=True, edge_color_mode="signed")
-graph_mutation  = construct_knn_graph_pearson(selected_mutation_np,  "Mutation",      n_neighbors_mutation, mutation_threshold,  plot=True, edge_color_mode="signed")
-graph_coexp     = construct_knn_graph_pearson(selected_coexp_np,     "CO-EXPRESSION", n_neighbors_coexp,    coexp_threshold,     plot=True, edge_color_mode="signed")
-
-# Quick shapes
-print(f"Clinical: X={graph_clinical.x.shape}, edges={graph_clinical.edge_index.shape}")
-print(f"CNA:      X={graph_cna.x.shape}, edges={graph_cna.edge_index.shape}")
-print(f"GSE:      X={graph_gse.x.shape}, edges={graph_gse.edge_index.shape}")
-print(f"DNA:      X={graph_dna.x.shape}, edges={graph_dna.edge_index.shape}")
-print(f"miRNA:    X={graph_mirna.x.shape}, edges={graph_mirna.edge_index.shape}")
-print(f"Mutation: X={graph_mutation.x.shape}, edges={graph_mutation.edge_index.shape}")
-print(f"COEXP:    X={graph_coexp.x.shape}, edges={graph_coexp.edge_index.shape}")
-# ======== CORRECTED: Graph Autoencoder training for feature reconstruction ========
-import os
 import numpy as np
+from sklearn.model_selection import StratifiedShuffleSplit
+
+y = labels  # 🔥 use your label variable
+
+sss = StratifiedShuffleSplit(
+    n_splits=1,
+    test_size=0.2,
+    random_state=42
+)
+
+train_idx, test_idx = next(sss.split(y, y))
+
+train_mask = np.zeros(len(y), dtype=bool)
+test_mask = np.zeros(len(y), dtype=bool)
+
+train_mask[train_idx] = True
+test_mask[test_idx] = True
+
+print("\n===== DATA SPLIT =====")
+print("Train samples:", train_mask.sum())
+print("Test samples :", test_mask.sum())
+
+print("\n===== CLASS DISTRIBUTION =====")
+print("Train:", np.bincount(y[train_mask]))
+print("Test :", np.bincount(y[test_mask]))
+W_train = {}
+W_test = {}
+
+for name, W in W_dict.items():
+    W_train[name] = W[np.ix_(train_mask, train_mask)]
+    W_test[name]  = W[np.ix_(test_mask, test_mask)]
+# ============================================================
+# 🔥 STEP 2: SPARSIFY GRAPH (VERY IMPORTANT)
+# ============================================================
+
+for k in W_train:
+    thresh = np.percentile(W_train[k], 90)
+    W_train[k] = (W_train[k] > thresh).astype(float)
+
+for k in W_test:
+    thresh = np.percentile(W_test[k], 90)
+    W_test[k] = (W_test[k] > thresh).astype(float)
+from torch_geometric.utils import dense_to_sparse
+import torch
+
+edge_index_train = {}
+edge_index_test = {}
+
+# 🔥 TRAIN GRAPH
+for key in W_train:
+    A = torch.tensor(W_train[key], dtype=torch.float32)
+    edge_index, _ = dense_to_sparse(A)
+    edge_index_train[key] = edge_index
+
+# 🔥 TEST GRAPH
+for key in W_test:
+    A = torch.tensor(W_test[key], dtype=torch.float32)
+    edge_index, _ = dense_to_sparse(A)
+    edge_index_test[key] = edge_index
+modalities_train = {}
+modalities_test = {}
+
+for name, X in modalities.items():
+    modalities_train[name] = X[train_mask]
+    modalities_test[name]  = X[test_mask]
+import torch
+
+X_train_dict = {
+    name: torch.tensor(data, dtype=torch.float32)
+    for name, data in modalities_train.items()
+}
+
+X_test_dict = {
+    name: torch.tensor(data, dtype=torch.float32)
+    for name, data in modalities_test.items()
+}
+print("\n📊 TRAIN SHAPES:")
+for k, v in X_train_dict.items():
+    print(f"{k}: {v.shape}")
+
+print("\n📊 TEST SHAPES:")
+for k, v in X_test_dict.items():
+    print(f"{k}: {v.shape}")
+import torch
+import numpy as np
+
+def comp(g):
+    # Convert to numpy (if tensor)
+    if isinstance(g, torch.Tensor):
+        g = g.cpu().numpy()
+
+    # Add self-loop
+    g = g + np.eye(g.shape[0])
+
+    # Degree matrix
+    d = np.diag(g.sum(axis=1))
+
+    # D^(-1/2)
+    d_inv_sqrt = np.power(d, -0.5)
+    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0
+
+    # Convert to torch
+    d_inv_sqrt = torch.tensor(d_inv_sqrt, dtype=torch.float32)
+    g = torch.tensor(g, dtype=torch.float32)
+
+    # Normalization
+    s = d_inv_sqrt @ g @ d_inv_sqrt
+
+    return s
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_geometric.nn as pyg_nn
-from torch_geometric.data import Data
 
-# ---------------- GAE definition ----------------
-class GAE_Encoder(nn.Module):
-    def __init__(self, in_channels, out_channels):
+# =========================
+# Encoder
+# =========================
+class Encoder(nn.Module):
+    def __init__(self, input_dim, feature_dim):
         super().__init__()
-        self.conv1 = pyg_nn.GCNConv(in_channels, 2 * out_channels)
-        self.bn1   = nn.BatchNorm1d(2 * out_channels)
-        self.conv2 = pyg_nn.GCNConv(2 * out_channels, out_channels)
-        self.dropout = nn.Dropout(0.3)
+        self.enc1 = nn.Linear(input_dim, 512)
+        self.enc2 = nn.Linear(512, feature_dim)
 
-    def forward(self, x, edge_index):
-        x = self.conv1(x, edge_index)
-        x = self.bn1(x)
-        x = F.relu(x)
-        x = self.dropout(x)
-        x = self.conv2(x, edge_index)
-        return x  # latent
+        self.weight = nn.Parameter(torch.Tensor(feature_dim, feature_dim))
+        nn.init.xavier_uniform_(self.weight)
 
-class GraphAutoencoder(nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def forward(self, x, s):
+        # Graph propagation
+        x = torch.matmul(s, x)
+        x = F.relu(self.enc1(x))   # 🔥 changed from tanh → ReLU
+
+        x = torch.matmul(s, x)
+        z = F.relu(self.enc2(x))   # 🔥 changed from tanh → ReLU
+
+        # Graph reconstruction
+        a = torch.sigmoid(z @ self.weight @ z.T)
+
+        return z, a
+
+
+# =========================
+# Decoder
+# =========================
+class Decoder(nn.Module):
+    def __init__(self, input_dim, feature_dim):
         super().__init__()
-        self.encoder = GAE_Encoder(in_channels, out_channels)
-        self.decoder = nn.Linear(out_channels, in_channels)  # feature recon
+        self.dec1 = nn.Linear(feature_dim, 512)
+        self.dec2 = nn.Linear(512, input_dim)
 
-    def forward(self, x, edge_index):
-        z = self.encoder(x, edge_index)
-        x_hat = self.decoder(z)
-        return z, x_hat
+    def forward(self, z, s):
+        x = torch.matmul(s, z)
+        x = F.relu(self.dec1(x))   # 🔥 changed to ReLU
 
-# ---------------- Utilities ----------------
-def ensure_tensor_features(graph_data: Data):
-    """Ensure graph_data.x (float32) and graph_data.edge_index (long) exist and are valid."""
-    assert hasattr(graph_data, "x") and graph_data.x is not None, "graph_data.x is missing"
-    assert hasattr(graph_data, "edge_index") and graph_data.edge_index is not None, "edge_index is missing"
-    graph_data.x = graph_data.x.float()
-    graph_data.edge_index = graph_data.edge_index.long()
-    return graph_data
+        x = torch.matmul(s, x)
+        x_recon = self.dec2(x)     # 🔥 NO activation (important)
 
-def attach_features_if_missing(graph_data: Data, features_np: np.ndarray):
-    """If graph_data.x is missing, attach given features."""
-    if (not hasattr(graph_data, "x")) or (graph_data.x is None):
-        graph_data.x = torch.tensor(features_np, dtype=torch.float32)
-    else:
-        # If present, ensure dtype float32
-        graph_data.x = graph_data.x.float()
-    return graph_data
+        return x_recon
 
-def train_gae(graph_data: Data, out_channels=32, epochs=100, lr=1e-2, weight_decay=0.0, device=None, verbose=True):
-    graph_data = ensure_tensor_features(graph_data)
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    in_channels = graph_data.x.size(1)  # <--- infer input dim here (FIX)
-    model = GraphAutoencoder(in_channels, out_channels).to(device)
-    x = graph_data.x.to(device)
-    edge_index = graph_data.edge_index.to(device)
+# =========================
+# Multi-View Network
+# =========================
+class Network(nn.Module):
+    def __init__(self, view, input_size, feature_dim, high_feature_dim, class_num, device):
+        super().__init__()
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    loss_fn = nn.MSELoss()
+        # Multi-view encoders & decoders
+        self.encoders = nn.ModuleList([
+            Encoder(input_size[v], feature_dim).to(device)
+            for v in range(view)
+        ])
+
+        self.decoders = nn.ModuleList([
+            Decoder(input_size[v], feature_dim).to(device)
+            for v in range(view)
+        ])
+
+        # Feature head (for contrastive learning)
+        self.feature_head = nn.Linear(feature_dim, high_feature_dim)
+
+        # 🔥 FIXED CLASSIFIER (NO SOFTMAX)
+        self.classifier = nn.Linear(feature_dim, class_num)
+
+        self.view = view
+
+    def forward(self, xs, S_dict):
+        hs, qs, xrs, zs, ars = [], [], [], [], []
+
+        for v in range(self.view):
+            # Encode
+            z, a = self.encoders[v](xs[v], S_dict[v])
+
+            # High-level features (contrastive)
+            h = F.normalize(self.feature_head(z), dim=1)
+
+            # Classification logits (NO softmax)
+            q = self.classifier(z)
+
+            # Decode
+            xr = self.decoders[v](z, S_dict[v])
+
+            # Store
+            hs.append(h)
+            qs.append(q)
+            xrs.append(xr)
+            zs.append(z)
+            ars.append(a)
+
+        return hs, qs, xrs, zs, ars
+import torch
+
+# 🔥 ADD THIS
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+names = list(X_train_dict.keys())
+
+# TRAIN
+xs_train = [X_train_dict[name].to(device) for name in names]
+S_train  = [comp(W_train[name]).to(device) for name in names]
+
+# TEST
+xs_test = [X_test_dict[name].to(device) for name in names]
+S_test  = [comp(W_test[name]).to(device) for name in names]
+
+# LABELS
+y_train = torch.tensor(labels[train_mask], dtype=torch.long).to(device)
+y_test  = torch.tensor(labels[test_mask], dtype=torch.long).to(device)
+print("\n✅ TRAIN CHECK")
+for i, name in enumerate(names):
+    print(f"{name}: X {xs_train[i].shape} | S {S_train[i].shape}")
+
+print("\n✅ TEST CHECK")
+for i, name in enumerate(names):
+    print(f"{name}: X {xs_test[i].shape} | S {S_test[i].shape}")
+import torch.nn.functional as F
+import torch
+
+# ======================================
+# 1. Reconstruction Loss
+# ======================================
+def reconstruction_loss(xs, xrs):
+    loss = 0
+    for x, xr in zip(xs, xrs):
+        loss += F.mse_loss(xr, x)
+    return loss
+
+
+# ======================================
+# 2. Contrastive Loss (FIXED)
+# ======================================
+def contrastive_loss(hs, temperature=0.5):
+    loss = 0
+    count = 0
+
+    for i in range(len(hs)):
+        for j in range(i + 1, len(hs)):
+
+            z_i = F.normalize(hs[i], dim=1)
+            z_j = F.normalize(hs[j], dim=1)
+
+            N = z_i.size(0)
+
+            representations = torch.cat([z_i, z_j], dim=0)  # (2N, d)
+
+            similarity_matrix = torch.matmul(representations, representations.T) / temperature
+
+            # remove self similarity
+            mask = torch.eye(2*N, dtype=torch.bool).to(z_i.device)
+            similarity_matrix = similarity_matrix.masked_fill(mask, -1e9)
+
+            # 🔥 CORRECT POSITIVE PAIRS
+            labels = torch.cat([
+                torch.arange(N, 2*N),
+                torch.arange(0, N)
+            ]).to(z_i.device)
+
+            loss_i = F.cross_entropy(similarity_matrix, labels)
+
+            loss += loss_i
+            count += 1
+
+    return loss / count
+
+
+# ======================================
+# 3. Classification Loss
+# ======================================
+def classification_loss(qs, labels):
+    loss = 0
+    for q in qs:
+        loss += F.cross_entropy(q, labels)
+    return loss
+
+
+# ======================================
+# 4. Graph Reconstruction Loss
+# ======================================
+def graph_loss(ars, W_dict, names, device):
+    loss = 0
+
+    for i, name in enumerate(names):
+        g = torch.tensor(W_dict[name], dtype=torch.float32).to(device)
+
+        # normalize target graph
+        g = g / (g.max() + 1e-8)
+
+        loss += F.mse_loss(ars[i], g)
+
+    return loss
+# ============================================================
+# 🔥 TRAIN + TEST (FINAL CORRECT VERSION)
+# ============================================================
+
+import torch
+import torch.optim as optim
+
+# ============================================================
+# ✅ ENSURE LABELS ARE CORRECT (DO THIS ONCE)
+# ============================================================
+y_train = torch.tensor(labels[train_mask], dtype=torch.long).to(device)
+y_test  = torch.tensor(labels[test_mask], dtype=torch.long).to(device)
+
+# ============================================================
+# MODEL INIT
+# ============================================================
+model = Network(
+    view=len(xs_train),
+    input_size=[x.shape[1] for x in xs_train],
+    feature_dim=128,
+    high_feature_dim=64,
+    class_num=5,
+    device=device
+).to(device)
+
+optimizer = optim.Adam(model.parameters(), lr=5e-4, weight_decay=1e-4)
+
+names = list(X_train_dict.keys())
+
+# ============================================================
+# 🔥 EARLY STOPPING SETUP
+# ============================================================
+best_loss = float("inf")
+patience = 10
+counter = 0
+
+# ============================================================
+# 🔍 DEBUG CHECK (IMPORTANT)
+# ============================================================
+print("X size:", xs_train[0].shape[0])
+print("y size:", y_train.shape[0])
+
+# ============================================================
+# TRAINING
+# ============================================================
+for epoch in range(80):
 
     model.train()
-    for epoch in range(1, epochs + 1):
-        optimizer.zero_grad()
-        z, x_hat = model(x, edge_index)
-        loss = loss_fn(x_hat, x)
-        loss.backward()
-        optimizer.step()
-        if verbose and (epoch % 10 == 0 or epoch == 1 or epoch == epochs):
-            print(f"[GAE] Epoch {epoch:3d}/{epochs} | recon MSE: {loss.item():.6f}")
+    optimizer.zero_grad()
 
-    model.eval()
-    with torch.no_grad():
-        z, _ = model(x, edge_index)
-    return z.cpu().numpy()
+    hs, qs, xrs, zs, ars = model(xs_train, S_train)
 
-# ---------------- OPTIONAL: Attach features to graphs if .x is missing ----------------
-# Expect these numpy arrays already exist:
-# selected_clinical_np, selected_cna_np, selected_gse_np, selected_mirna_np,
-# selected_mutation_np, selected_dna_np, selected_coexp_np
-# and graphs: graph_clinical, graph_cna, graph_gse, graph_mirna, graph_mutation, graph_dna, graph_coexp
+    recon_loss = reconstruction_loss(xs_train, xrs)
+    cont_loss = contrastive_loss(hs)
+    cls_loss = classification_loss(qs, y_train)   # ✅ FIXED
+    graph_loss_val = graph_loss(ars, W_train, names, device)
 
-# If your PyG Data objects don't have .x yet, attach from the selected_* arrays:
-graph_clinical = attach_features_if_missing(graph_clinical, selected_clinical_np)
-graph_cna      = attach_features_if_missing(graph_cna,      selected_cna_np)
-graph_gse      = attach_features_if_missing(graph_gse,      selected_gse_np)
-graph_mirna    = attach_features_if_missing(graph_mirna,    selected_mirna_np)
-graph_mutation = attach_features_if_missing(graph_mutation, selected_mutation_np)
-graph_dna      = attach_features_if_missing(graph_dna,      selected_dna_np)
-graph_coexp    = attach_features_if_missing(graph_coexp,    selected_coexp_np)
+    loss = recon_loss + 0.1 * cont_loss + cls_loss + graph_loss_val
 
-# Ensure dtypes are correct
-for g in [graph_clinical, graph_cna, graph_gse, graph_mirna, graph_mutation, graph_dna, graph_coexp]:
-    ensure_tensor_features(g)
+    loss.backward()
 
-# ---------------- Train per-modality GAEs and save ----------------
-latent_dim = 32
-epochs = 100
-lr = 0.01
+    # gradient clipping
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
 
-latent_clinical = train_gae(graph_clinical, out_channels=latent_dim, epochs=epochs, lr=lr)
-latent_cna      = train_gae(graph_cna,      out_channels=latent_dim, epochs=epochs, lr=lr)
-latent_gse      = train_gae(graph_gse,      out_channels=latent_dim, epochs=epochs, lr=lr)
-latent_mirna    = train_gae(graph_mirna,    out_channels=latent_dim, epochs=epochs, lr=lr)
-latent_mutation = train_gae(graph_mutation, out_channels=latent_dim, epochs=epochs, lr=lr)
-latent_dna      = train_gae(graph_dna,      out_channels=latent_dim, epochs=epochs, lr=lr)
-latent_coexp    = train_gae(graph_coexp,    out_channels=latent_dim, epochs=epochs, lr=lr)
+    optimizer.step()
 
-print("\nStep 5: Integrating Node Embeddings")
-print("====================================")
-print(f"Clinical Embeddings Shape: {latent_clinical.shape}")
-print(f"CNA Embeddings Shape     : {latent_cna.shape}")
-print(f"GSE Embeddings Shape     : {latent_gse.shape}")
-print(f"DNA Embeddings Shape     : {latent_dna.shape}")
-print(f"Mutation Embeddings Shape: {latent_mutation.shape}")
-print(f"miRNA Embeddings Shape   : {latent_mirna.shape}")
-print(f"COEXP Embeddings Shape   : {latent_coexp.shape}")
-
-# (Optional) Also print raw feature shapes if you keep the selected_* arrays around
-try:
-    print(f"\nClinical Shape: {selected_clinical_np.shape}")
-    print(f"CNA Shape     : {selected_cna_np.shape}")
-    print(f"GSE Shape     : {selected_gse_np.shape}")
-    print(f"DNA Shape     : {selected_dna_np.shape}")
-    print(f"Mutation Shape: {selected_mutation_np.shape}")
-    print(f"miRNA Shape   : {selected_mirna_np.shape}")
-    print(f"COEXP Shape   : {selected_coexp_np.shape}")
-except NameError:
-    pass
-
-# Save outputs
-np.save("latent_clinical.npy", latent_clinical)
-np.save("latent_cna.npy",      latent_cna)
-np.save("latent_gse.npy",      latent_gse)
-np.save("latent_dna.npy",      latent_dna)
-np.save("latent_mirna.npy",    latent_mirna)
-np.save("latent_mutation.npy", latent_mutation)
-np.save("latent_coexp.npy",    latent_coexp)
-np.save("labels.npy",          np.asarray(labels))
-latent_clinical=np.load("latent_clinical.npy")
-latent_cna=np.load("latent_cna.npy")
-latent_gse=np.load("latent_gse.npy")
-latent_dna=np.load("latent_dna.npy")
-latent_mirna=np.load("latent_mirna.npy")
-latent_mutation=np.load("latent_mutation.npy")
-latent_coexp=np.load("latent_coexp.npy")
-import numpy as np
-
-def compare_selected_latent(selected, latent, name="modality"):
-    """
-    Compare a selected features array and its corresponding latent embeddings.
-    - Reports shapes
-    - Checks sample count match
-    - Declares 'different' if column counts differ (expected for embeddings)
-    - For a numeric sanity metric, computes mean absolute diff on the first min(cols) columns
-    """
-    n_sel, d_sel = selected.shape
-    n_lat, d_lat = latent.shape
-
-    print(f"\n[{name.upper()}]")
-    print(f"  Selected shape: {selected.shape}")
-    print(f"  Latent shape:   {latent.shape}")
-
-    # Row count check
-    if n_sel == n_lat:
-        print("  ✅ Same number of samples (rows)")
+    # ========================================================
+    # EARLY STOPPING
+    # ========================================================
+    if loss.item() < best_loss:
+        best_loss = loss.item()
+        counter = 0
     else:
-        print("  ❌ Different number of samples!")
-        return
+        counter += 1
 
-    # If column counts differ -> they are different (expected)
-    if d_sel != d_lat:
-        print("  ✅ Different dimensionality (expected: embeddings compress/transform features)")
-        k = min(d_sel, d_lat)
-        mad = np.mean(np.abs(selected[:, :k] - latent[:, :k]))
-        print(f"  Mean absolute difference on first {k} columns: {mad:.6f}")
-        return
+    if counter > patience:
+        print(f"⛔ Early stopping at epoch {epoch}")
+        break
 
-    # If same columns, we can test numeric closeness
-    if np.allclose(selected, latent, atol=1e-6, rtol=1e-6):
-        print("  ⚠️ Arrays are nearly identical (unexpected for learned embeddings)")
-    else:
-        mad = np.mean(np.abs(selected - latent))
-        print("  ✅ Arrays differ (as expected)")
-        print(f"  Mean absolute difference (all cols): {mad:.6f}")
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch} | Loss: {loss.item():.4f}")
 
+# ============================================================
+# TESTING
+# ============================================================
+model.eval()
 
-# 🔹 Call for all modalities (make sure these variables exist in memory)
-compare_selected_latent(selected_clinical_np, latent_clinical, name="clinical")
-compare_selected_latent(selected_cna_np,      latent_cna,      name="cna")
-compare_selected_latent(selected_gse_np,      latent_gse,      name="gse")
-compare_selected_latent(selected_dna_np,      latent_dna,      name="dna")
-compare_selected_latent(selected_mirna_np,    latent_mirna,    name="mirna")
-compare_selected_latent(selected_mutation_np, latent_mutation, name="mutation")
-compare_selected_latent(selected_coexp_np,    latent_coexp,    name="coexp")
-import numpy as np
+with torch.no_grad():
+    hs, qs, xrs, zs, ars = model(xs_test, S_test)
 
-def check_nan(name, arr):
-    """Check if array has any NaN values and print results."""
-    if arr is None:
-        print(f"{name}: [SKIPPED] (array is None)")
-        return
-    arr = np.asarray(arr)
-    has_nan = np.isnan(arr).any()
-    n_nans  = np.isnan(arr).sum()
-    print(f"{name:<20} | Shape: {arr.shape} | Any NaN: {has_nan} | Total NaNs: {n_nans}")
+    q_avg = sum(qs) / len(qs)
+    preds = torch.argmax(q_avg, dim=1)
 
-print("\n=== Checking SELECTED features ===")
-check_nan("selected_clinical", selected_clinical_np)
-check_nan("selected_cna", selected_cna_np)
-check_nan("selected_gse", selected_gse_np)
-check_nan("selected_dna", selected_dna_np)
-check_nan("selected_mirna", selected_mirna_np)
-check_nan("selected_mutation", selected_mutation_np)
-check_nan("selected_coexp", selected_coexp_np)
+    acc = (preds == y_test).float().mean()
 
-print("\n=== Checking LATENT embeddings ===")
-check_nan("latent_clinical", latent_clinical)
-check_nan("latent_cna", latent_cna)
-check_nan("latent_gse", latent_gse)
-check_nan("latent_dna", latent_dna)
-check_nan("latent_mirna", latent_mirna)
-check_nan("latent_mutation", latent_mutation)
-check_nan("latent_coexp", latent_coexp)
-------------Combine RAW Feature with Graph Embedding----
-import numpy as np
-import pandas as pd
+print("✅ Test Accuracy:", acc.item())
+model.eval()
 
-# -------------------------------
-# Dictionary of latent + raw arrays
-# (assumes they are already loaded in memory)
-# -------------------------------
-modalities = {
-    "Clinical":   (latent_clinical, selected_clinical_np),
-    "CNA":        (latent_cna, selected_cna_np),
-    "GSE":        (latent_gse, selected_gse_np),
-    "DNA":        (latent_dna, selected_dna_np),
-    "miRNA":      (latent_mirna, selected_mirna_np),
-    "Mutation":   (latent_mutation, selected_mutation_np),
-    "COEXP":      (latent_coexp, selected_coexp_np),
-}
+with torch.no_grad():
+    hs_te, qs_te, xrs_te, zs_te, ars_te = model(xs_test, S_test)
+for i, name in enumerate(names):
+    print(f"\n{name} TEST embedding shape:", zs_te[i].shape)
+model.eval()
 
-# -------------------------------
-# Combine and save for each modality
-# -------------------------------
-for name, (latent, raw) in modalities.items():
-    print(f"\n🔹 Processing {name}...")
-    if latent.shape[0] != raw.shape[0]:
-        raise ValueError(f"Row mismatch in {name}: latent={latent.shape[0]}, raw={raw.shape[0]}")
+with torch.no_grad():
+    hs_tr, qs_tr, xrs_tr, zs_tr, ars_tr = model(xs_train, S_train)
+# ============================================================
+# 🔥 TRAIN EMBEDDING (CORRECTED)
+# ============================================================
 
-    combined = np.concatenate([latent, raw], axis=1)
-    print(f"   {name} combined shape: {combined.shape}")
+z_concat_train = torch.cat(zs_tr, dim=1)
+z_concat_train_np = z_concat_train.cpu().numpy()
 
-    # Save as .npy
-    np.save(f"combined_{name.lower()}.npy", combined)
-    # Save as .csv
-    pd.DataFrame(combined).to_csv(f"combined_{name.lower()}.csv", index=False)
+# 🔥 STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
+z_concat_train_np = z_concat_train_np + np.random.normal(0, 0.01, z_concat_train_np.shape)
 
-print("\n✅ All combined files saved (both .npy and .csv).")
---------Classifier------------
-combined_clinical=np.load("combined_clinical.npy")
-combined_cna=np.load("combined_cna.npy")
-combined_gse=np.load("combined_gse.npy")
-combined_dna=np.load("combined_dna.npy")
-combined_mirna=np.load("combined_mirna.npy")
-combined_mutation=np.load("combined_mutation.npy")
-combined_coexp=np.load("combined_coexp.npy")
+# 🔥 STEP 2: STANDARDIZATION (VERY IMPORTANT)
+z_concat_train_np = (z_concat_train_np - z_concat_train_np.mean(axis=0)) / (z_concat_train_np.std(axis=0) + 1e-8)
+
+# 🔥 STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
+z_concat_train_np = z_concat_train_np / (np.linalg.norm(z_concat_train_np, axis=1, keepdims=True) + 1e-8)
+
+print("Train concat shape:", z_concat_train_np.shape)
 
 
+# ============================================================
+# 🔥 TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
+# ============================================================
 
+z_concat_test = torch.cat(zs_te, dim=1)
+z_concat_test_np = z_concat_test.cpu().numpy()
 
+# ⚠️ IMPORTANT: USE TRAIN STATS (NOT TEST!)
+mean = z_concat_train_np.mean(axis=0)
+std = z_concat_train_np.std(axis=0) + 1e-8
 
+z_concat_test_np = (z_concat_test_np - mean) / std
+z_concat_test_np = z_concat_test_np / (np.linalg.norm(z_concat_test_np, axis=1, keepdims=True) + 1e-8)
 
+print("Test concat shape:", z_concat_test_np.shape)
+    return W
