@@ -25,11 +25,13 @@ def build_knn_gaussian_graph(X, k=10):
     # Step 4: apply mask
     W = W * knn
 
-    # 🔥 FIX (VERY IMPORTANT)
+    #  FIX (VERY IMPORTANT)
     W = np.maximum(W, W.T)   # make symmetric
 
     # remove self-loops
     np.fill_diagonal(W, 0)
+
+    return W
 from sklearn.metrics.pairwise import euclidean_distances
 import numpy as np
 W_dict = {}
@@ -47,7 +49,7 @@ def visualize_graph(W, title="Graph Visualization", num_nodes=200):
     num_nodes: visualize subset (important for large graphs)
     """
 
-    #  Step 1: reduce size (for clarity)
+    # Step 1: reduce size (for clarity)
     W_small = W[:num_nodes, :num_nodes]
 
     #  Step 2: create graph
@@ -58,7 +60,7 @@ def visualize_graph(W, title="Graph Visualization", num_nodes=200):
     edges_to_remove = [(u, v) for u, v, d in G.edges(data=True) if d['weight'] < threshold]
     G.remove_edges_from(edges_to_remove)
 
-    #  Step 4: layout
+    # Step 4: layout
     pos = nx.spring_layout(G, seed=42)
 
     #  Step 5: plot
@@ -133,7 +135,7 @@ import torch
 edge_index_train = {}
 edge_index_test = {}
 
-# TRAIN GRAPH
+#  TRAIN GRAPH
 for key in W_train:
     A = torch.tensor(W_train[key], dtype=torch.float32)
     edge_index, _ = dense_to_sparse(A)
@@ -354,7 +356,7 @@ def contrastive_loss(hs, temperature=0.5):
             mask = torch.eye(2*N, dtype=torch.bool).to(z_i.device)
             similarity_matrix = similarity_matrix.masked_fill(mask, -1e9)
 
-            #  CORRECT POSITIVE PAIRS
+            # CORRECT POSITIVE PAIRS
             labels = torch.cat([
                 torch.arange(N, 2*N),
                 torch.arange(0, N)
@@ -394,7 +396,7 @@ def graph_loss(ars, W_dict, names, device):
 
     return loss
 # ============================================================
-# 🔥 TRAIN + TEST (FINAL CORRECT VERSION)
+#  TRAIN + TEST (FINAL CORRECT VERSION)
 # ============================================================
 
 import torch
@@ -500,26 +502,26 @@ model.eval()
 with torch.no_grad():
     hs_tr, qs_tr, xrs_tr, zs_tr, ars_tr = model(xs_train, S_train)
 # ============================================================
-#  TRAIN EMBEDDING (CORRECTED)
+# 🔥 TRAIN EMBEDDING (CORRECTED)
 # ============================================================
 
 z_concat_train = torch.cat(zs_tr, dim=1)
 z_concat_train_np = z_concat_train.cpu().numpy()
 
-#  STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
+# 🔥 STEP 1: ADD SMALL NOISE (ANTI-OVERFITTING)
 z_concat_train_np = z_concat_train_np + np.random.normal(0, 0.01, z_concat_train_np.shape)
 
-#  STEP 2: STANDARDIZATION (VERY IMPORTANT)
+# 🔥 STEP 2: STANDARDIZATION (VERY IMPORTANT)
 z_concat_train_np = (z_concat_train_np - z_concat_train_np.mean(axis=0)) / (z_concat_train_np.std(axis=0) + 1e-8)
 
-#  STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
+# 🔥 STEP 3: L2 NORMALIZATION (STABILIZES MODELS)
 z_concat_train_np = z_concat_train_np / (np.linalg.norm(z_concat_train_np, axis=1, keepdims=True) + 1e-8)
 
 print("Train concat shape:", z_concat_train_np.shape)
 
 
 # ============================================================
-#  TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
+# 🔥 TEST EMBEDDING (MATCH TRAIN DISTRIBUTION)
 # ============================================================
 
 z_concat_test = torch.cat(zs_te, dim=1)
@@ -533,4 +535,8 @@ z_concat_test_np = (z_concat_test_np - mean) / std
 z_concat_test_np = z_concat_test_np / (np.linalg.norm(z_concat_test_np, axis=1, keepdims=True) + 1e-8)
 
 print("Test concat shape:", z_concat_test_np.shape)
-    return W
+
+
+
+
+
