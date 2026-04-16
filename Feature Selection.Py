@@ -4,138 +4,210 @@
 ## from the selected features of these six modalities, and the resulting embeddings are concatenated with
 ## the Clinical (CLN) features to form a unified representation. The final breast cancer subtype
 ## classification is performed using a hybrid Choquet–Sugeno fuzzy integral.
+# ============================================================
+# 🔥 FINAL FEATURE SELECTION PIPELINE (CLEAN + STABLE)
+# ============================================================
 
-
-import os
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
+
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import mutual_info_classif
 from boruta import BorutaPy
 from mrmr import mrmr_classif
 
-# ----------------------------
-# Convert helper
-# ----------------------------
-def extract_features(df_or_arr):
-    """Return features only (skip PatientID first col, skip label last col)."""
-    if isinstance(df_or_arr, pd.DataFrame):
-        return df_or_arr.iloc[:, 1:-1].to_numpy()
-    arr = np.asarray(df_or_arr)
-    return arr[:, 1:-1]
+np.random.seed(42)
 
-# ----------------------------
-# Labels from clinical dataset
-# ----------------------------
-if isinstance(clinical_data, pd.DataFrame):
-    labels = clinical_data.iloc[:, -1].to_numpy().astype(int)
-else:
-    labels = np.asarray(clinical_data)[:, -1].astype(int)
+# ============================================================
+# LOAD PREPROCESSED DATA
+# ============================================================
 
-# ----------------------------
-# Features for all modalities
-# ----------------------------
-X_clinical = extract_features(clinical_data)
-X_dna      = extract_features(Dna_data)
-X_mirna    = extract_features(mi_rna_data)
-X_mutation = extract_features(mut_data)
-X_coexp    = extract_features(coexp_data)
+clinical = pd.read_csv("final_preprocessed_clinical.csv")
+cna      = pd.read_csv("final_preprocessed_cna.csv")
+gse      = pd.read_csv("final_preprocessed_gse.csv")
+dna      = pd.read_csv("final_preprocessed_dna.csv")
+mirna    = pd.read_csv("final_preprocessed_mirna.csv")
+mutation = pd.read_csv("final_preprocessed_mutation.csv")
+coexp    = pd.read_csv("final_preprocessed_coexp.csv")
 
-def to_numpy(X): return X.to_numpy() if isinstance(X, pd.DataFrame) else np.asarray(X)
+# ============================================================
+# EXTRACT FEATURES
+# ============================================================
 
-X_clinical = to_numpy(X_clinical)
-X_dna      = to_numpy(X_dna)
-X_mirna    = to_numpy(X_mirna)
-X_mutation = to_numpy(X_mutation)
-X_coexp    = to_numpy(X_coexp)
+def extract_X(df):
+    return df.iloc[:, :-1].values
 
-selected_clinical = np.asarray(X_clinical, dtype=np.float32)
-selected_mirna    = np.asarray(X_mirna,   dtype=np.float32)
-selected_mutation = np.asarray(X_mutation,dtype=np.float32)
-selected_coexp    = np.asarray(X_coexp,   dtype=np.float32)
+labels = clinical.iloc[:, -1].values.astype(int)
 
-print("[Shapes]")
-print("|Clinical:", selected_clinical.shape,
-      "| miRNA:", selected_mirna.shape,
-      "| Mutation:", selected_mutation.shape,
-      "| COEXP:", selected_coexp.shape)
+X_data = {
+    "clinical": extract_X(clinical),
+    "cna": extract_X(cna),
+    "gse": extract_X(gse),
+    "dna": extract_X(dna),
+    "mirna": extract_X(mirna),
+    "mutation": extract_X(mutation),
+    "coexp": extract_X(coexp)
+}
+
+# ============================================================
+# SUMMARY STORAGE
+# ============================================================
+
+summary = []
+
+# ============================================================
+# FEATURE SELECTION FUNCTION
+# ============================================================
+
+def feature_selection(X, y, name, k_features, use_prefilter=False):
+
+    print(f"\n🔹 Processing: {name}")
+
+    X = np.nan_to_num(np.asarray(X, dtype=np.float32))
+    y = np.asarray(y, dtype=int)
+
+    original_features = X.shape[1]
+    feature_names = [f"{name}_f{i}" for i in range(original_features)]
+
+    # ---------------- PREFILTER (DNA only) ----------------
+    if use_prefilter and X.shape[1] > 3000:
+        print("⚡ Applying MI prefilter...")
+        mi_scores = mutual_info_classif(X, y, random_state=42)
+        top_idx = np.argsort(-mi_scores)[:3000]
+        X = X[:, top_idx]
+        feature_names = [feature_names[i] for i in top_idx]
+
+    # ---------------- BORUTA ----------------
+    rf = RandomForestClassifier(
+        n_estimators=300,
+        n_jobs=-1,
+        class_weight='balanced',
+        max_depth=5,
+        random_state=42
+    )
+
+    boruta = BorutaPy(
+        rf,
+        n_estimators='auto',
+        max_iter=50,
+        random_state=42,
+        verbose=0
+    )
+
+    boruta.fit(X, y)
+
+    if boruta.support_.sum() == 0:
+        print("⚠️ Boruta fallback → MI")
+        mi_scores = mutual_info_classif(X, y, random_state=42)
+        idx = np.argsort(-mi_scores)[:k_features]
+        X_boruta = X[:, idx]
+        boruta_features = [feature_names[i] for i in idx]
+    else:
+        mask = boruta.support_
+        X_boruta = X[:, mask]
+        boruta_features = [f for f, m in zip(feature_names, mask) if m]
+
+    # ---------------- mRMR ----------------
+    k = min(k_features, X_boruta.shape[1])
+
+    df_X = pd.DataFrame(X_boruta, columns=boruta_features)
+    y_series = pd.Series(y)
+
+    selected_features = mrmr_classif(df_X, y_series, K=k)
+    X_final = df_X[selected_features].values
+
+    # ---------------- SAVE ----------------
+    pd.Series(selected_features).to_csv(f"selected_{name}_features.csv", index=False)
+
+    df_out = pd.DataFrame(X_final, columns=selected_features)
+    df_out["label"] = y
+    df_out.to_csv(f"selected_{name}_data.csv", index=False)
+
+    # ---------------- SUMMARY ----------------
+    summary.append({
+        "Modality": name,
+        "Original": original_features,
+        "After_Boruta": X_boruta.shape[1],
+        "After_mRMR": len(selected_features),
+        "Final_Selected": X_final.shape[1]
+    })
+
+    print(f"✅ {name}: {original_features} → {X_boruta.shape[1]} → {X_final.shape[1]}")
+
+    return X_final
 
 
+# ============================================================
+# APPLY PIPELINE (FIXED LOOP)
+# ============================================================
 
-np.save("selected_outputs/selected_clinical.npy",  selected_clinical)
-np.save("selected_outputs/selected_mirna.npy",    selected_mirna)
-np.save("selected_outputs/selected_mutation.npy", selected_mutation)
-np.save("selected_outputs/selected_coexp.npy",    selected_coexp)
+selected_data = {}
 
+for name, X in X_data.items():
 
-pd.DataFrame(selected_clinical).to_csv("selected_outputs/selected_clinical.csv", index=False)
-pd.DataFrame(selected_mirna).to_csv("selected_outputs/selected_mirna.csv", index=False)
-pd.DataFrame(selected_mutation).to_csv("selected_outputs/selected_mutation.csv", index=False)
-pd.DataFrame(selected_coexp).to_csv("selected_outputs/selected_coexp.csv", index=False)
-import numpy as np
-import pandas as pd
+    # -------- CLINICAL --------
+    if name == "clinical":
+        print("\n✅ Skipping feature selection for clinical")
 
-# Load your preprocessed clinical CSV
-clinical_data = pd.read_csv("clinical_final_preprocessed.csv")
+        feature_names = [f"clinical_f{i}" for i in range(X.shape[1])]
+        pd.Series(feature_names).to_csv("selected_clinical_features.csv", index=False)
 
-# Extract the label column (last column)
-labels = clinical_data.iloc[:, -1].to_numpy().astype(int)
+        df_out = pd.DataFrame(X, columns=feature_names)
+        df_out["label"] = labels
+        df_out.to_csv("selected_clinical_data.csv", index=False)
 
-# Save to numpy
-np.save("labels.npy", labels)
+        summary.append({
+            "Modality": name,
+            "Original": X.shape[1],
+            "After_Boruta": X.shape[1],
+            "After_mRMR": X.shape[1],
+            "Final_Selected": X.shape[1]
+        })
 
-print("✅ Saved: labels.npy")
-print("Shape:", labels.shape)
-print("Unique classes:", np.unique(labels))
-import numpy as np
-import pandas as pd
+        selected_data[name] = X
+        continue
 
-# Load the CSV
-selected_cna=pd.read_csv(
-    "/content/drive/MyDrive/Colab_Notebooks/breast_cancer/new_try/deeplearning/5th_sem/feature_selected/boruta_and_mrmr/selected_cna.csv"
-)
-selected_gse=pd.read_csv(
-    "/content/drive/MyDrive/Colab_Notebooks/breast_cancer/new_try/deeplearning/5th_sem/feature_selected/boruta_and_mrmr/selected_gse.csv"
-)
+    # -------- SKIP MUTATION & COEXP --------
+    if name in ["mutation", "coexp"]:
+        print(f"\n✅ Skipping feature selection for {name}")
 
-selected_dna = pd.read_csv(
-    "/content/drive/MyDrive/Colab_Notebooks/breast_cancer/new_try/deeplearning/5th_sem/feature_selected/boruta_and_mrmr/selected_dna_data.csv"
-)
+        df_out = pd.DataFrame(X)
+        df_out["label"] = labels
+        df_out.to_csv(f"selected_{name}_data.csv", index=False)
 
+        summary.append({
+            "Modality": name,
+            "Original": X.shape[1],
+            "After_Boruta": X.shape[1],
+            "After_mRMR": X.shape[1],
+            "Final_Selected": X.shape[1]
+        })
 
+        selected_data[name] = X
+        continue
 
-# Convert to NumPy
-selected_dna_np = selected_dna.to_numpy(dtype=np.float32)
-selected_cna_np = selected_cna.to_numpy(dtype=np.float32)
-selected_gse_np = selected_gse.to_numpy(dtype=np.float32)
+    # -------- DNA (WITH PREFILTER) --------
+    if name == "dna":
+        selected_data[name] = feature_selection(
+            X, labels, name, k_features=1000, use_prefilter=True
+        )
 
-# Save as .npy
-np.save("selected_outputs/selected_dna.npy", selected_dna_np)
-np.save("selected_outputs/selected_cna.npy", selected_cna_np)
-np.save("selected_outputs/selected_gse.npy", selected_gse_np)
-
-print("✅ Saved: selected_dna_np.npy")
-print("Shape:", selected_dna_np.shape)
-
-print("✅ Saved: selected_cna_np.npy")
-print("Shape:", selected_cna_np.shape)
-
-print("✅ Saved: selected_gse_np.npy")
-print("Shape:", selected_gse_np.shape)
-selected_clinical_np= np.load("selected_outputs/selected_clinical.npy")
-selected_cna_np= np.load("selected_outputs/selected_cna.npy")
-selected_gse_np= np.load("selected_outputs/selected_gse.npy")
-selected_dna_np= np.load("selected_outputs/selected_dna.npy")
-selected_mirna_np= np.load("selected_outputs/selected_mirna.npy")
-selected_mutation_np= np.load("selected_outputs/selected_mutation.npy")
-selected_coexp_np= np.load("selected_outputs/selected_coexp.npy")
+    # -------- OTHERS --------
+    else:
+        selected_data[name] = feature_selection(
+            X, labels, name, k_features=200, use_prefilter=False
+        )
 
 
-print("Clinical:",selected_clinical_np.shape)
-print("CNA:",selected_cna_np.shape)
-print("GSE:",selected_gse_np.shape)
-print("DNA:",selected_dna_np.shape)
-print("miRNA:",selected_mirna_np.shape)
-print("Mutation:",selected_mutation_np.shape)
-print("CO-EXPRESSION:",selected_coexp_np.shape)
+# ============================================================
+# FINAL SUMMARY TABLE
+# ============================================================
+
+summary_df = pd.DataFrame(summary)
+
+print("\n📊 FEATURE SELECTION SUMMARY")
+print(summary_df)
+
+summary_df.to_csv("feature_selection_summary.csv", index=False)
+
+print("\n🎉 ALL DONE SUCCESSFULLY!")
