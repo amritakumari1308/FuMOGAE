@@ -5,7 +5,7 @@
 ## The final breast cancer subtype classification is performed using a hybrid Choquet–Sugeno fuzzy integral.
 ------------METABRIC DATASET(CLINICAL,CNA,GSE,MUTATION,COEXPRESSION) Modalities classification
 # ============================================================
-# 🔥 s-20: FINAL CLASSIFICATION + CHOQUET + SUGENO + HYBRID (ADD WEIGHTED F1)
+#  s-20: FINAL CLASSIFICATION + CHOQUET + SUGENO + HYBRID (ADD WEIGHTED F1)
 # ============================================================
 
 import numpy as np
@@ -308,7 +308,7 @@ all_auc_hyb.append(auc_hyb)
 print(f"Fold {fold+1} → SUGENO  Acc:{acc_sug:.4f} | F1_macro:{f1m_sug:.4f} | F1_weighted:{f1w_sug:.4f} | AUC:{auc_sug:.4f}")
 print(f"Fold {fold+1} → CHOQUET Acc:{acc_chq:.4f} | F1_macro:{f1m_chq:.4f} | F1_weighted:{f1w_chq:.4f} | AUC:{auc_chq:.4f}")
 print(f"Fold {fold+1} → HYBRID  Acc:{acc_hyb:.4f} | F1_macro:{f1m_hyb:.4f} | F1_weighted:{f1w_hyb:.4f} | AUC:{auc_hyb:.4f}")
-print("\n🔥 ===== FINAL RESULTS (10-FOLD CV) =====")
+print("\n ===== FINAL RESULTS (10-FOLD CV) =====")
 
 # =========================
 # SUGENO
